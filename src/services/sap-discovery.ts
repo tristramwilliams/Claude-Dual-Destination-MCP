@@ -2,10 +2,9 @@ import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import { SAPClient } from './sap-client.js';
 import { Logger } from '../utils/logger.js';
 import { Config } from '../utils/config.js';
-import { ODataService, EntityType, ServiceMetadata } from '../types/sap-types.js';
+import { ODataService, EntityType, ServiceMetadata, FunctionImport, FunctionParameter } from '../types/sap-types.js';
 
 import { JSDOM } from 'jsdom';
-import { tr } from 'zod/v4/locales';
 
 export class SAPDiscoveryService {
     private catalogEndpoints = [
@@ -36,7 +35,7 @@ export class SAPDiscoveryService {
                 const v2Services = await this.discoverV2Services();
                 services.push(...v2Services);
 
-                
+
             // Apply service filtering based on configuration
             const filteredServices = this.filterServices(services);
             this.logger.info(`Discovered ${services.length} total services, ${filteredServices.length} match the filter criteria`);
@@ -194,7 +193,7 @@ export class SAPDiscoveryService {
         return services;
     }
 
-    private async getServiceMetadata(service: ODataService): Promise<ServiceMetadata> {
+    async getServiceMetadata(service: ODataService): Promise<ServiceMetadata> {
         try {
             const destination = await this.sapClient.getDestination();
 
@@ -213,18 +212,20 @@ export class SAPDiscoveryService {
         }
     }
 
-    private parseMetadata(metadataXml: string, odataVersion: string): ServiceMetadata {
+    parseMetadata(metadataXml: string, odataVersion: string): ServiceMetadata {
         const dom = new JSDOM(metadataXml);
         const xmlDoc = dom.window.document;
 
         const entitySets = this.extractEntitySets(xmlDoc);
         const entityTypes = this.extractEntityTypes(xmlDoc, entitySets);
+        const functionImports = this.extractFunctionImports(xmlDoc);
 
         return {
             entityTypes,
             entitySets,
             version: odataVersion,
-            namespace: this.extractNamespace(xmlDoc)
+            namespace: this.extractNamespace(xmlDoc),
+            functionImports
         };
     }
 
@@ -232,12 +233,12 @@ export class SAPDiscoveryService {
         const entityTypes: EntityType[] = [];
         const nodes = xmlDoc.querySelectorAll("EntityType");
 
-    nodes.forEach((node: Element) => {
+        nodes.forEach((node: Element) => {
             const entitySet = entitySets.find(entitySet=>(entitySet.entitytype as string)?.split(".")[1] === node.getAttribute("Name"));
-            const entityType: EntityType =      {
+            const entityType: EntityType = {
                 name: node.getAttribute("Name") || '',
                 namespace: node.parentElement?.getAttribute("Namespace") || '',
-                entitySet:entitySet?.name as string,
+                entitySet: entitySet?.name as string,
                 creatable: !!entitySet?.creatable,
                 updatable: !!entitySet?.updatable,
                 deletable: !!entitySet?.deletable,
@@ -264,6 +265,17 @@ export class SAPDiscoveryService {
                 entityType.keys.push(keyNode.getAttribute("Name") || '');
             });
 
+            // Extract navigation properties
+            const navPropNodes = node.querySelectorAll("NavigationProperty");
+            navPropNodes.forEach((navNode: Element) => {
+                const multiplicity = (navNode.getAttribute("Multiplicity") || '*') as '1' | '0..1' | '*';
+                entityType.navigationProperties.push({
+                    name: navNode.getAttribute("Name") || '',
+                    type: navNode.getAttribute("Type") || navNode.getAttribute("ToRole") || '',
+                    multiplicity
+                });
+            });
+
             entityTypes.push(entityType);
         });
 
@@ -274,7 +286,7 @@ export class SAPDiscoveryService {
         const entitySets: Array< { [key: string]: string | boolean | null }> = [];
         const nodes = xmlDoc.querySelectorAll("EntitySet");
 
-    nodes.forEach((node: Element) => {
+        nodes.forEach((node: Element) => {
             const entityset: { [key: string]: string | boolean | null } = {};
             ['name','entitytype', 'sap:creatable', 'sap:updatable', 'sap:deletable', 'sap:pageable', 'sap:addressable', 'sap:content-version'].forEach(attr => {
                 const [namespace, name ] = attr.split(":");
@@ -295,5 +307,119 @@ export class SAPDiscoveryService {
     private extractNamespace(xmlDoc: Document): string {
         const schemaNode = xmlDoc.querySelector("Schema");
         return schemaNode?.getAttribute("Namespace") || '';
+    }
+
+    /**
+     * Extract FunctionImport elements (OData v2) and Action/Function elements (OData v4)
+     * from the $metadata XML document.
+     */
+    private extractFunctionImports(xmlDoc: Document): FunctionImport[] {
+        const functionImports: FunctionImport[] = [];
+        const namespace = this.extractNamespace(xmlDoc);
+
+        // OData v2: <FunctionImport> elements inside <EntityContainer>
+        const fiNodes = xmlDoc.querySelectorAll("FunctionImport");
+        fiNodes.forEach((node: Element) => {
+            const name = node.getAttribute("Name") || '';
+            if (!name) return;
+
+            const fi: FunctionImport = {
+                name,
+                httpMethod: node.getAttribute("m:HttpMethod") || node.getAttribute("HttpMethod") || 'POST',
+                returnType: node.getAttribute("ReturnType") || undefined,
+                entitySet: node.getAttribute("EntitySet") || undefined,
+                isBound: false,
+                namespace,
+                parameters: []
+            };
+
+            const paramNodes = node.querySelectorAll("Parameter");
+            paramNodes.forEach((paramNode: Element) => {
+                const param: FunctionParameter = {
+                    name: paramNode.getAttribute("Name") || '',
+                    type: paramNode.getAttribute("Type") || '',
+                    nullable: paramNode.getAttribute("Nullable") !== "false",
+                    mode: paramNode.getAttribute("Mode") || undefined
+                };
+                if (param.name) {
+                    fi.parameters.push(param);
+                }
+            });
+
+            functionImports.push(fi);
+        });
+
+        // OData v4: <Action> elements (bound or unbound)
+        const actionNodes = xmlDoc.querySelectorAll("Action");
+        actionNodes.forEach((node: Element) => {
+            const name = node.getAttribute("Name") || '';
+            if (!name) return;
+
+            const isBound = node.getAttribute("IsBound") === "true";
+            const fi: FunctionImport = {
+                name,
+                httpMethod: 'POST',
+                isBound,
+                namespace,
+                parameters: []
+            };
+
+            // ReturnType child element
+            const returnTypeNode = node.querySelector("ReturnType");
+            if (returnTypeNode) {
+                fi.returnType = returnTypeNode.getAttribute("Type") || undefined;
+            }
+
+            const paramNodes = node.querySelectorAll("Parameter");
+            paramNodes.forEach((paramNode: Element) => {
+                const param: FunctionParameter = {
+                    name: paramNode.getAttribute("Name") || '',
+                    type: paramNode.getAttribute("Type") || '',
+                    nullable: paramNode.getAttribute("Nullable") !== "false"
+                };
+                if (param.name) {
+                    fi.parameters.push(param);
+                }
+            });
+
+            functionImports.push(fi);
+        });
+
+        // OData v4: <Function> elements (read-only, use GET)
+        const funcNodes = xmlDoc.querySelectorAll("Function");
+        funcNodes.forEach((node: Element) => {
+            const name = node.getAttribute("Name") || '';
+            if (!name) return;
+
+            const isBound = node.getAttribute("IsBound") === "true";
+            const fi: FunctionImport = {
+                name,
+                httpMethod: 'GET',
+                isBound,
+                namespace,
+                parameters: []
+            };
+
+            const returnTypeNode = node.querySelector("ReturnType");
+            if (returnTypeNode) {
+                fi.returnType = returnTypeNode.getAttribute("Type") || undefined;
+            }
+
+            const paramNodes = node.querySelectorAll("Parameter");
+            paramNodes.forEach((paramNode: Element) => {
+                const param: FunctionParameter = {
+                    name: paramNode.getAttribute("Name") || '',
+                    type: paramNode.getAttribute("Type") || '',
+                    nullable: paramNode.getAttribute("Nullable") !== "false"
+                };
+                if (param.name) {
+                    fi.parameters.push(param);
+                }
+            });
+
+            functionImports.push(fi);
+        });
+
+        return functionImports;
     }
 }

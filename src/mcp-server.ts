@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 import { DestinationService } from './services/destination-service.js';
 import { SAPClient } from './services/sap-client.js';
@@ -119,4 +120,10 @@ export async function runStdioServer(discoveredServices: ODataService[]): Promis
         logger.error('Failed to start SAP MCP Server:', error);
         process.exit(1);
     }
+}
+
+// Run as standalone STDIO server when executed directly (e.g. via MCP Inspector)
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
+    runStdioServer([]);
 }

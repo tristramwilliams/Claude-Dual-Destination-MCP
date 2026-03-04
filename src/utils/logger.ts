@@ -16,7 +16,9 @@ export class Logger {
                 service: 'btp-sap-odata-to-mcp-server'
             },
             transports: [
-                new winston.transports.Console()
+                new winston.transports.Console({
+                    stderrLevels: ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']
+                })
             ]
         });
     }

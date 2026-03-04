@@ -16,6 +16,7 @@ export interface ServiceMetadata {
     entitySets: Array<{ [key: string]: string | boolean | null }>;
     version: string;
     namespace: string;
+    functionImports: FunctionImport[];
 }
 
 export interface EntityType {
@@ -42,4 +43,21 @@ export interface NavigationProperty {
     name: string;
     type: string;
     multiplicity: '1' | '0..1' | '*';
+}
+
+export interface FunctionImport {
+    name: string;
+    httpMethod: string;
+    returnType?: string;
+    entitySet?: string;
+    isBound?: boolean;
+    namespace?: string;
+    parameters: FunctionParameter[];
+}
+
+export interface FunctionParameter {
+    name: string;
+    type: string;
+    nullable: boolean;
+    mode?: string;
 }

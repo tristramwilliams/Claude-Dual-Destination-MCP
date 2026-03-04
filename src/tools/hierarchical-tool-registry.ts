@@ -94,7 +94,7 @@ export class HierarchicalSAPToolRegistry {
                 inputSchema: {
                     serviceId: z.string().describe("The SAP service ID from discover-sap-data. IMPORTANT: Use the 'id' field from the search results, NOT the 'title' field."),
                     entityName: z.string().describe("The entity name from discover-sap-data. IMPORTANT: Use the 'name' field from the results, NOT the 'entitySet' field."),
-                    operation: z.string().describe("The operation to perform. Valid values: read, read-single, create, update, delete"),
+                    operation: z.string().describe("The operation to perform. Valid values: read, read-single, create, update, patch, delete. 'patch' is identical to 'update' (both send HTTP PATCH). For draft-enabled entities with IsActiveEntity keys, prefer the dedicated patch-sap-entity tool."),
                     parameters: z.record(z.any()).optional().describe("Operation parameters such as keys, filters, and data. For read-single/update/delete operations, include the entity key properties. For create/update operations, include the entity data fields."),
                     filterString: z.string().optional().describe("OData $filter query option value. Use OData filter syntax without the '$filter=' prefix. Examples: \"Status eq 'Active'\", \"Amount gt 1000\", \"Name eq 'John' and Status eq 'Active'\". Common operators: eq (equals), ne (not equals), gt (greater than), lt (less than), ge (greater/equal), le (less/equal), and, or, not."),
                     selectString: z.string().optional().describe("OData $select query option value. Comma-separated list of property names to include in the response, without the '$select=' prefix. Example: \"Name,Status,CreatedDate\" or \"CustomerID,CustomerName\". WARNING: Not all SAP OData APIs fully support $select. If the operation fails with a $select-related error, retry WITHOUT this parameter to get all properties."),
@@ -107,6 +107,62 @@ export class HierarchicalSAPToolRegistry {
             },
             async (args: Record<string, unknown>) => {
                 return this.executeEntityOperation(args);
+            }
+        );
+
+        // Tool 4: Execute Function Import / Action (SAP Draft API, business operations)
+        this.mcpServer.registerTool(
+            "execute-function-import",
+            {
+                title: "Execute SAP OData Function Import or Action",
+                description: `[LEVEL 3 - EXECUTION] Execute an OData Function Import or Action on a SAP service. AUTHENTICATION REQUIRED. Use for: draft lifecycle operations (EditAction, ActivationAction, DiscardAction), business actions (AssignSourceOfSupply, CreatePurchaseOrder, CreateRFQ), or any named operation that appears in the service $metadata under <FunctionImport> or <Action>. For entity-bound actions, provide the full entityPath including key predicates. For unbound actions, omit entityPath and pass all parameters in the 'parameters' field. Use get-service-metadata with format 'function-imports-only' to discover available function imports first.`,
+                inputSchema: {
+                    serviceId: z.string().describe("SAP service ID from discover-sap-data, e.g. 'ZMM_PUR_PR_PROCESS_SRV_0001'"),
+                    functionName: z.string().describe("The exact function import name as it appears in $metadata, e.g. 'EditAction', 'ActivationAction', 'DiscardAction', 'AssignSourceOfSupply'. Do NOT include the namespace prefix — that is added automatically."),
+                    entityPath: z.string().optional().describe("Optional. Full entity path including key predicates to bind the action to a specific record. e.g. \"C_Purchasereqitmdtlsext(PurchaseRequisition='10000000',PurchaseRequisitionItem='00010',IsActiveEntity=true)\". Omit for unbound/service-level function imports."),
+                    parameters: z.record(z.any()).optional().describe("Key-value pairs of function import input parameters. For bound actions these are sent in the POST body. For unbound GET functions these are appended as query string parameters. Example: { PreserveChanges: false }"),
+                    httpMethod: z.enum(["GET", "POST"]).optional().describe("HTTP method to use. Default: POST. Most SAP actions use POST; some read-only functions use GET. Check get-service-metadata if unsure."),
+                    returnEntitySet: z.string().optional().describe("Optional. The entity set name the function import returns, used to parse the response correctly. Found in the EntitySet attribute of the FunctionImport in $metadata.")
+                }
+            },
+            async (args: Record<string, unknown>) => {
+                return this.executeFunctionImport(args);
+            }
+        );
+
+        // Tool 5: PATCH entity with composite keys (incl. IsActiveEntity for SAP Draft API)
+        this.mcpServer.registerTool(
+            "patch-sap-entity",
+            {
+                title: "Partially Update (PATCH) a SAP Entity",
+                description: `[LEVEL 3 - EXECUTION] Partially update (PATCH) a specific SAP entity record. AUTHENTICATION REQUIRED. Use this instead of the standard 'update' operation when: the entity has an 'IsActiveEntity' key (draft-enabled services — always set to false to patch the draft); you only want to update specific fields without sending the full entity; or the standard update operation returns an error on partial payloads. This is the correct way to update draft entity fields before calling ActivationAction. Tip: run execute-function-import with functionName='EditAction' first to create the draft, then patch it here, then activate with ActivationAction.`,
+                inputSchema: {
+                    serviceId: z.string().describe("SAP service ID from discover-sap-data"),
+                    entityName: z.string().describe("Entity type name as returned by discover-sap-data or get-entity-metadata (e.g. 'C_PurchasereqitmdtlsextType'). Used to look up the entity set name."),
+                    keyProperties: z.record(z.any()).describe("All key fields needed to identify the specific record. For draft entities include IsActiveEntity: false to target the draft. Example: { PurchaseRequisition: '10000000', PurchaseRequisitionItem: '00010', IsActiveEntity: false }. Boolean and numeric values must be passed as native types (not strings) so they are formatted correctly in the OData key predicate."),
+                    updateFields: z.record(z.any()).describe("Only the fields you want to change. Example: { PurchaseRequisitionItemText: 'New description', RequestedQuantity: 5 }")
+                }
+            },
+            async (args: Record<string, unknown>) => {
+                return this.patchSapEntity(args);
+            }
+        );
+
+        // Tool 6: Get service $metadata (including function imports and nav properties)
+        this.mcpServer.registerTool(
+            "get-service-metadata",
+            {
+                title: "Get SAP Service OData Metadata",
+                description: `Retrieve the OData $metadata for a SAP service, exposing information not available through the standard entity tools. Returns: all Function Imports and their parameters (operations not available via CRUD); navigation properties (relationships between entities); entity key properties; draft-enabled indicators. Use 'function-imports-only' format to discover what actions exist before calling execute-function-import. Uses technical user (no auth needed).`,
+                inputSchema: {
+                    serviceId: z.string().describe("SAP service ID from discover-sap-data"),
+                    format: z.enum(["summary", "full-xml", "function-imports-only", "navigation-properties-only"])
+                        .optional()
+                        .describe("How to return the metadata. 'summary' (default) returns a structured JSON overview. 'full-xml' returns raw $metadata XML. 'function-imports-only' returns just the function imports with parameters. 'navigation-properties-only' returns just nav props per entity.")
+                }
+            },
+            async (args: Record<string, unknown>) => {
+                return this.getServiceMetadata(args);
             }
         );
 
@@ -1062,10 +1118,12 @@ export class HierarchicalSAPToolRegistry {
             const parameters = args.parameters as Record<string, unknown> || {};
 
             // Validate operation for better Copilot compatibility
-            const validOperations = ["read", "read-single", "create", "update", "delete"];
+            const validOperations = ["read", "read-single", "create", "update", "patch", "delete"];
             if (!validOperations.includes(operation)) {
                 throw new Error(`Invalid operation: ${operation}. Valid operations are: ${validOperations.join(', ')}`);
             }
+            // 'patch' is an alias for 'update' — both send HTTP PATCH
+            if (operation === 'patch') operation = 'update';
 
             // Build queryOptions from flattened parameters for better Copilot compatibility
             const queryOptions: Record<string, unknown> = {};
@@ -1251,28 +1309,362 @@ export class HierarchicalSAPToolRegistry {
     }
 
     /**
-     * Build key value for entity operations (handles single and composite keys)
+     * Format a single OData key value correctly based on its EDM type.
+     * - Edm.Boolean  → true / false  (no quotes)
+     * - Edm.Int*, Edm.Decimal, Edm.Double, etc. → numeric literal  (no quotes)
+     * - Everything else (Edm.String, Edm.Guid, Edm.DateTime…) → 'value'  (single-quoted)
+     */
+    private formatODataKeyValue(edtType: string, value: unknown): string {
+        const t = edtType.toLowerCase();
+        if (typeof value === 'boolean' || t.includes('boolean')) {
+            return String(value);
+        }
+        if (
+            typeof value === 'number' ||
+            t.includes('int') ||
+            t.includes('decimal') ||
+            t.includes('double') ||
+            t.includes('single') ||
+            t.includes('float') ||
+            t.includes('byte')
+        ) {
+            return String(value);
+        }
+        return `'${value}'`;
+    }
+
+    /**
+     * Build a key predicate from caller-supplied keyProperties object.
+     * Uses JavaScript type detection (no EDM type metadata needed):
+     *   boolean / number → unquoted  |  everything else → single-quoted
+     * Returns the predicate without outer parentheses, e.g.:
+     *   "K1='10000000',K2='00010',IsActiveEntity=false"
+     */
+    private buildKeyPredicateFromObject(keyProperties: Record<string, unknown>): string {
+        const parts = Object.entries(keyProperties).map(([key, value]) => {
+            if (typeof value === 'boolean' || typeof value === 'number') {
+                return `${key}=${value}`;
+            }
+            return `${key}='${value}'`;
+        });
+        return parts.join(',');
+    }
+
+    /**
+     * Build key predicate for entity operations (handles single and composite keys).
+     * Uses EDM type information from the entity metadata so boolean/numeric keys are
+     * formatted without quotes (fixes IsActiveEntity=false for SAP Draft API).
+     *
+     * Returns the predicate WITHOUT outer parentheses, e.g.:
+     *   single string  → "'10000000'"
+     *   single boolean → "false"
+     *   composite      → "K1='v1',K2=false,K3=123"
      */
     private buildKeyValue(entityType: EntityType, parameters: Record<string, unknown>): string {
-        const keyProperties = entityType.properties.filter(p => entityType.keys.includes(p.name));
+        // Resolve key metadata; fall back to Edm.String for any key not found in properties
+        const keyMeta = entityType.keys.map(keyName => {
+            const prop = entityType.properties.find(p => p.name === keyName);
+            return { name: keyName, type: prop?.type || 'Edm.String' };
+        });
 
-        if (keyProperties.length === 1) {
-            const keyName = keyProperties[0].name;
-            if (!(keyName in parameters)) {
-                throw new Error(`Missing required key property: ${keyName}. Required keys: ${entityType.keys.join(', ')}`);
-            }
-            return String(parameters[keyName]);
+        if (keyMeta.length === 0) {
+            throw new Error(`Entity '${entityType.name}' has no key properties defined`);
         }
 
-        // Handle composite keys
-        const keyParts = keyProperties.map(prop => {
-            if (!(prop.name in parameters)) {
-                throw new Error(`Missing required key property: ${prop.name}. Required keys: ${entityType.keys.join(', ')}`);
+        if (keyMeta.length === 1) {
+            const { name, type } = keyMeta[0];
+            if (!(name in parameters)) {
+                throw new Error(`Missing required key property: ${name}. Required keys: ${entityType.keys.join(', ')}`);
             }
-            return `${prop.name}='${parameters[prop.name]}'`;
+            // Single-key shorthand: just the formatted value (no property name prefix)
+            return this.formatODataKeyValue(type, parameters[name]);
+        }
+
+        // Composite key: explicit property=value pairs
+        const keyParts = keyMeta.map(({ name, type }) => {
+            if (!(name in parameters)) {
+                throw new Error(`Missing required key property: ${name}. Required keys: ${entityType.keys.join(', ')}`);
+            }
+            return `${name}=${this.formatODataKeyValue(type, parameters[name])}`;
         });
         return keyParts.join(',');
     }
+
+    // ─── New Tool Handlers ────────────────────────────────────────────────────
+
+    /**
+     * execute-function-import: call any OData Function Import / Action.
+     * Supports bound actions (entityPath provided) and unbound (no entityPath).
+     */
+    private async executeFunctionImport(args: Record<string, unknown>) {
+        try {
+            const serviceId = args.serviceId as string;
+            const functionName = args.functionName as string;
+            const entityPath = args.entityPath as string | undefined;
+            const parameters = (args.parameters as Record<string, unknown>) || {};
+            const httpMethod = ((args.httpMethod as string) || 'POST').toUpperCase() as 'GET' | 'POST';
+
+            if (!serviceId || !functionName) {
+                return {
+                    content: [{ type: "text" as const, text: "ERROR: serviceId and functionName are required." }],
+                    isError: true
+                };
+            }
+
+            // Look up service
+            const service = this.discoveredServices.find(s => s.id === serviceId);
+            if (!service) {
+                return {
+                    content: [{ type: "text" as const, text: `ERROR: Service not found: ${serviceId}. Use discover-sap-data to find available services.` }],
+                    isError: true
+                };
+            }
+
+            // Set user token
+            if (this.userToken) {
+                this.sapClient.setUserToken(this.userToken);
+            }
+
+            // Build the namespace-qualified function name for bound actions.
+            // If functionName already contains a dot it is assumed to be fully qualified.
+            const namespace = service.metadata?.namespace;
+            const qualifiedName = (entityPath && namespace && !functionName.includes('.'))
+                ? `${namespace}.${functionName}`
+                : functionName;
+
+            // Construct the path relative to the service base URL:
+            //   bound:   EntityPath/namespace.FunctionName
+            //   unbound: FunctionName
+            const functionPath = entityPath
+                ? `${entityPath}/${qualifiedName}`
+                : qualifiedName;
+
+            this.logger.debug(`Executing function import: ${httpMethod} ${service.url}${functionPath}`);
+
+            const response = await this.sapClient.executeFunctionImport(
+                service.url,
+                functionPath,
+                httpMethod === 'POST' ? parameters : undefined,
+                httpMethod,
+                httpMethod === 'GET' ? parameters : undefined
+            );
+
+            let responseText = `SUCCESS: Executed ${functionName}`;
+            if (entityPath) responseText += ` on ${entityPath}`;
+            responseText += `\n\n== RESULT ==\n`;
+            responseText += JSON.stringify(response.data, null, 2);
+
+            return {
+                content: [{ type: "text" as const, text: responseText }]
+            };
+
+        } catch (error) {
+            this.logger.error('Error executing function import:', error);
+            const msg = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text" as const, text: `ERROR: Failed to execute function import '${args.functionName}'\n\nDetails: ${msg}` }],
+                isError: true
+            };
+        }
+    }
+
+    /**
+     * patch-sap-entity: PATCH an entity using caller-supplied key properties.
+     * Handles IsActiveEntity=false for SAP Draft API without relying on entity metadata
+     * for key construction — the caller provides the exact key values including virtuals.
+     */
+    private async patchSapEntity(args: Record<string, unknown>) {
+        try {
+            const serviceId = args.serviceId as string;
+            const entityName = args.entityName as string;
+            const keyProperties = args.keyProperties as Record<string, unknown>;
+            const updateFields = args.updateFields as Record<string, unknown>;
+
+            if (!serviceId || !entityName || !keyProperties || !updateFields) {
+                return {
+                    content: [{ type: "text" as const, text: "ERROR: serviceId, entityName, keyProperties and updateFields are all required." }],
+                    isError: true
+                };
+            }
+
+            // Look up service
+            const service = this.discoveredServices.find(s => s.id === serviceId);
+            if (!service) {
+                return {
+                    content: [{ type: "text" as const, text: `ERROR: Service not found: ${serviceId}. Use discover-sap-data to find available services.` }],
+                    isError: true
+                };
+            }
+
+            // Resolve entity set name from entity type metadata; fall back to entityName itself
+            const entityType = service.metadata?.entityTypes?.find(e => e.name === entityName);
+            const entitySet = entityType?.entitySet || entityName;
+
+            // Build OData key predicate using JavaScript type detection
+            const keyPredicate = this.buildKeyPredicateFromObject(keyProperties);
+            const entityPath = `${entitySet}(${keyPredicate})`;
+
+            // Set user token
+            if (this.userToken) {
+                this.sapClient.setUserToken(this.userToken);
+            }
+
+            this.logger.debug(`Patching entity: PATCH ${service.url}${entityPath}`);
+
+            const response = await this.sapClient.patchEntityByPath(service.url, entityPath, updateFields);
+
+            let responseText = `SUCCESS: Patched ${entitySet}(${keyPredicate})\n\n`;
+            responseText += `Updated fields: ${Object.keys(updateFields).join(', ')}\n\n`;
+            responseText += `== RESULT ==\n`;
+            responseText += JSON.stringify(response.data ?? { message: 'Update accepted (no content returned)' }, null, 2);
+
+            return {
+                content: [{ type: "text" as const, text: responseText }]
+            };
+
+        } catch (error) {
+            this.logger.error('Error patching SAP entity:', error);
+            const msg = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text" as const, text: `ERROR: Failed to patch entity '${args.entityName}'\n\nDetails: ${msg}` }],
+                isError: true
+            };
+        }
+    }
+
+    /**
+     * get-service-metadata: return $metadata in one of several formats.
+     */
+    private async getServiceMetadata(args: Record<string, unknown>) {
+        try {
+            const serviceId = args.serviceId as string;
+            const format = ((args.format as string) || 'summary').toLowerCase();
+
+            if (!serviceId) {
+                return {
+                    content: [{ type: "text" as const, text: "ERROR: serviceId is required." }],
+                    isError: true
+                };
+            }
+
+            const service = this.discoveredServices.find(s => s.id === serviceId);
+            if (!service) {
+                return {
+                    content: [{ type: "text" as const, text: `ERROR: Service not found: ${serviceId}. Use discover-sap-data to find available services.` }],
+                    isError: true
+                };
+            }
+
+            // ── full-xml ────────────────────────────────────────────────────────
+            if (format === 'full-xml') {
+                const rawXml = await this.sapClient.fetchRawMetadata(service.metadataUrl);
+                return {
+                    content: [{ type: "text" as const, text: rawXml }]
+                };
+            }
+
+            const metadata = service.metadata;
+            if (!metadata) {
+                return {
+                    content: [{ type: "text" as const, text: `WARNING: Metadata not available for service ${serviceId}. The service may not have loaded properly.` }]
+                };
+            }
+
+            // ── function-imports-only ───────────────────────────────────────────
+            if (format === 'function-imports-only') {
+                const fis = metadata.functionImports || [];
+                let text = `[FUNCTION IMPORTS] ${service.title} (${serviceId})\n`;
+                text += `Namespace: ${metadata.namespace}\n`;
+                text += `Found ${fis.length} function imports / actions\n\n`;
+                text += `USAGE: Call execute-function-import with:\n`;
+                text += `  - serviceId: "${serviceId}"\n`;
+                text += `  - functionName: (one of the names below)\n`;
+                text += `  - entityPath: (for bound actions — include key predicate)\n\n`;
+                text += JSON.stringify({ functionImports: fis }, null, 2);
+                return {
+                    content: [{ type: "text" as const, text }]
+                };
+            }
+
+            // ── navigation-properties-only ──────────────────────────────────────
+            if (format === 'navigation-properties-only') {
+                const navProps = metadata.entityTypes.map(et => ({
+                    entityType: et.name,
+                    entitySet: et.entitySet,
+                    navigationProperties: et.navigationProperties
+                })).filter(e => e.navigationProperties.length > 0);
+
+                let text = `[NAVIGATION PROPERTIES] ${service.title} (${serviceId})\n`;
+                text += `Namespace: ${metadata.namespace}\n\n`;
+                text += JSON.stringify({ navigationProperties: navProps }, null, 2);
+                return {
+                    content: [{ type: "text" as const, text }]
+                };
+            }
+
+            // ── summary (default) ───────────────────────────────────────────────
+            const summary = {
+                service: {
+                    serviceId: service.id,
+                    title: service.title,
+                    description: service.description,
+                    odataVersion: service.odataVersion,
+                    url: service.url
+                },
+                namespace: metadata.namespace,
+                entityTypes: metadata.entityTypes.map(et => ({
+                    name: et.name,
+                    entitySet: et.entitySet,
+                    keys: et.keys,
+                    isDraftEnabled: et.keys.includes('IsActiveEntity') ||
+                        et.properties.some(p => p.name === 'IsActiveEntity') ||
+                        et.navigationProperties.some(n => n.name === 'DraftAdministrativeData'),
+                    capabilities: {
+                        creatable: et.creatable,
+                        updatable: et.updatable,
+                        deletable: et.deletable
+                    },
+                    navigationProperties: et.navigationProperties.map(n => ({
+                        name: n.name,
+                        type: n.type,
+                        multiplicity: n.multiplicity
+                    }))
+                })),
+                functionImports: metadata.functionImports || [],
+                stats: {
+                    entityTypeCount: metadata.entityTypes.length,
+                    functionImportCount: (metadata.functionImports || []).length,
+                    draftEnabledEntityCount: metadata.entityTypes.filter(et =>
+                        et.keys.includes('IsActiveEntity') ||
+                        et.properties.some(p => p.name === 'IsActiveEntity')
+                    ).length
+                }
+            };
+
+            let text = `[SERVICE METADATA SUMMARY] ${service.title} (${serviceId})\n\n`;
+            text += `Namespace: ${metadata.namespace}\n`;
+            text += `Entity Types: ${summary.stats.entityTypeCount} (${summary.stats.draftEnabledEntityCount} draft-enabled)\n`;
+            text += `Function Imports / Actions: ${summary.stats.functionImportCount}\n\n`;
+            if (summary.stats.draftEnabledEntityCount > 0) {
+                text += `ℹ️  DRAFT-ENABLED SERVICE: Use execute-function-import (EditAction/ActivationAction/DiscardAction) for the edit lifecycle.\n\n`;
+            }
+            text += JSON.stringify(summary, null, 2);
+
+            return {
+                content: [{ type: "text" as const, text }]
+            };
+
+        } catch (error) {
+            this.logger.error('Error in get-service-metadata:', error);
+            const msg = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text" as const, text: `ERROR: Failed to get metadata for service '${args.serviceId}'\n\nDetails: ${msg}` }],
+                isError: true
+            };
+        }
+    }
+
+    // ─── End New Tool Handlers ────────────────────────────────────────────────
 
     /**
      * Register service metadata resources (unchanged from original)
@@ -1373,9 +1765,10 @@ export class HierarchicalSAPToolRegistry {
                         workflow: [
                             'Level 1: Call discover-sap-data to find services/entities (returns minimal data)',
                             'Level 2: Call get-entity-metadata for selected entity (returns full schema)',
-                            'Level 3: Call execute-sap-operation to perform CRUD operations (uses schema from Level 2)'
+                            'Optional: Call get-service-metadata to discover function imports and nav properties',
+                            'Level 3: Call execute-sap-operation (CRUD), execute-function-import (actions), or patch-sap-entity (draft updates)'
                         ],
-                        architecture: '3-level progressive discovery optimized for token efficiency',
+                        architecture: '6-tool progressive discovery: discovery → metadata → execution (CRUD + actions + patches)',
                         security_context: 'Operations execute under authenticated user identity'
                     } : {
                         status: 'AUTHENTICATION_REQUIRED',
@@ -1474,56 +1867,78 @@ Authentication Requirements:
    - Discovery operations: Technical user (reliable metadata access)
    - Data operations: User's JWT token (proper authorization and audit trail)
 
-== AVAILABLE TOOLS - 3-LEVEL ARCHITECTURE ==
+== AVAILABLE TOOLS ==
 
-You have access to 3 progressive discovery tools optimized for token efficiency:
+You have access to 6 tools covering the full SAP OData interaction lifecycle:
+
+── DISCOVERY ──────────────────────────────────────────────────────────────────
 
 LEVEL 1: discover-sap-data (LIGHTWEIGHT DISCOVERY)
 - Purpose: Search and find relevant services/entities with MINIMAL data
-- Returns: Only serviceId, serviceName, entityName, entityCount (optimized for LLM decision)
-- Fallback: If no matches, returns ALL services with entity lists (still minimal fields)
-- Parameters:
-  - query (optional): Search term for services/entities
-  - category (optional): Filter by business area (business-partner, sales, finance, etc.)
-  - limit (optional): Maximum results (default: 20)
-- Examples:
-  - { query: "customer" } → Returns list of services/entities matching "customer"
-  - { query: "" } → Returns all available services with their entities
-- Use this: When you need to find or explore what's available
+- Returns: Only serviceId, serviceName, entityName, entityCount
+- Parameters: query, category (business-partner/sales/finance/procurement/hr/logistics/all), limit
 
-LEVEL 2: get-entity-metadata (FULL SCHEMA DETAILS)
+LEVEL 2: get-entity-metadata (FULL ENTITY SCHEMA)
 - Purpose: Get complete schema for a specific entity
-- Returns: ALL properties with types, keys, nullable, maxLength, capabilities
-- Parameters:
-  - serviceId (required): From Level 1 results
-  - entityName (required): From Level 1 results
-- Use this: After selecting service/entity from Level 1, before executing operations
-- Provides all details needed to construct proper CRUD operations
+- Returns: ALL properties, types, keys, nullable, maxLength, capabilities
+- Parameters: serviceId, entityName
 
-LEVEL 3: execute-sap-operation (AUTHENTICATED EXECUTION)
-- Purpose: Perform CRUD operations on entities
-- Parameters: serviceId, entityName, operation, parameters, OData options
-- Operations: read, read-single, create, update, delete
-- Requires: User authentication (JWT token)
-- Use this: After getting schema from Level 2 to execute actual operations
+get-service-metadata (FUNCTION IMPORTS & ADVANCED METADATA)
+- Purpose: Discover function imports, nav properties, and draft indicators
+- Returns: Summary JSON, raw XML, function imports only, or nav props only
+- Parameters: serviceId, format (summary|full-xml|function-imports-only|navigation-properties-only)
+- Use this: Before execute-function-import to find out what actions exist
 
-== RECOMMENDED WORKFLOW ==
+── EXECUTION (all require authentication) ────────────────────────────────────
 
-✅ CORRECT 3-Level Workflow:
+LEVEL 3: execute-sap-operation (CRUD OPERATIONS)
+- Purpose: Perform standard CRUD on entities
+- Operations: read, read-single, create, update, patch, delete
+- Parameters: serviceId, entityName, operation, parameters, OData filter/select/top/skip options
+
+execute-function-import (SAP ACTIONS & FUNCTION IMPORTS)
+- Purpose: Invoke any OData Function Import or Action (not available via CRUD)
+- Use for: EditAction, ActivationAction, DiscardAction, AssignSourceOfSupply, CreatePurchaseOrder, etc.
+- Parameters: serviceId, functionName, entityPath (optional), parameters, httpMethod (GET|POST)
+- Bound actions: supply entityPath with full key predicate
+- Unbound actions: omit entityPath
+
+patch-sap-entity (PARTIAL UPDATE WITH COMPOSITE KEYS)
+- Purpose: PATCH an entity with explicit key properties (incl. virtual IsActiveEntity)
+- Use for: Updating draft entities in SAP Draft API pattern before ActivationAction
+- Parameters: serviceId, entityName, keyProperties {IsActiveEntity: false, ...}, updateFields
+
+== SAP DRAFT API LIFECYCLE ==
+
+Many SAP Fiori services (MM_PUR_PR_PROCESS_SRV, SD_ORDER_PROCESS_SRV, etc.) use the Draft API.
+Identifiable by IsActiveEntity in entity keys or DraftAdministrativeData nav property.
+
+EDIT WORKFLOW:
+1. get-service-metadata (function-imports-only) → confirm EditAction/ActivationAction exist
+2. execute-sap-operation (read-single, IsActiveEntity=true) → read current values
+3. execute-function-import (EditAction, entityPath with IsActiveEntity=true) → create draft
+4. patch-sap-entity (keyProperties with IsActiveEntity=false, updateFields) → update draft
+5. execute-function-import (ActivationAction, entityPath with IsActiveEntity=false) → save
+   OR execute-function-import (DiscardAction) → discard changes
+
+== RECOMMENDED STANDARD WORKFLOW ==
+
+✅ CORRECT Workflow for CRUD:
 1. discover-sap-data → Find relevant services/entities (minimal data)
 2. get-entity-metadata → Get full schema for selected entity
 3. execute-sap-operation → Execute operation using schema from step 2
 
-Benefits of 3-Level Approach:
-- Token Efficient: Level 1 returns minimal data for decision making
-- Progressive Detail: Only fetch full schemas when needed (Level 2)
-- Clear Separation: Discovery → Metadata → Execution
-- Better for LLMs: Smaller responses, clearer workflow
+✅ CORRECT Workflow for Draft Editing:
+1. discover-sap-data → Find service
+2. get-service-metadata (function-imports-only) → Confirm action names
+3. execute-function-import (EditAction) → Create draft
+4. patch-sap-entity → Update draft fields
+5. execute-function-import (ActivationAction) → Commit changes
 
-⚠️ IMPORTANT: Do NOT skip Level 2!
-- Level 1 gives you entity names to choose from
-- Level 2 gives you the schema details needed for operations
-- Level 3 executes with proper parameters from Level 2
+⚠️ IMPORTANT REMINDERS:
+- Always check get-service-metadata before execute-function-import to confirm the exact function name
+- For draft entities, always pass IsActiveEntity as a native boolean (not string)
+- The 'patch' operation in execute-sap-operation is identical to 'update' (both send HTTP PATCH)
 
 == BEST PRACTICES ==
 

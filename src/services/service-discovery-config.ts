@@ -42,7 +42,7 @@ export class ServiceDiscoveryConfigService {
         const allowAll = this.config.get('odata.allowAllServices', false);
         const patterns = this.config.get('odata.servicePatterns', []);
         const exclusions = this.config.get('odata.exclusionPatterns', []);
-        const maxServices = this.config.get('odata.maxServices', 50);
+        const maxServices = this.config.get('odata.maxServices', 500);
 
         // Validate max services
         if (maxServices <= 0) {
@@ -111,7 +111,7 @@ export class ServiceDiscoveryConfigService {
 
         const patterns = this.config.get('odata.servicePatterns', []);
         const exclusions = this.config.get('odata.exclusionPatterns', []);
-        const maxServices = this.config.get('odata.maxServices', 50);
+        const maxServices = this.config.get('odata.maxServices', 500);
 
         let description = '';
 

@@ -219,7 +219,38 @@ export class AuthService {
                 const securityContext = await this.validateToken(token);
                 req.authInfo = securityContext;
                 req.jwtToken = token;
-                this.logger.debug(`Request authenticated for user: ${securityContext.getUserName()}`);
+
+                // ── PP-DIAG: log identity details to help diagnose principal propagation ──
+                // Decode claims without verification just for logging
+                let tokenClaims: Record<string, unknown> = {};
+                try {
+                    const parts = token.split('.');
+                    if (parts.length === 3) {
+                        tokenClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+                    }
+                } catch { /* ignore decode errors */ }
+
+                this.logger.info('PP-DIAG: User authenticated — identity provider details', {
+                    user_name: securityContext.getUserName(),
+                    email: securityContext.getEmail(),
+                    // origin is critical: 'sap.default' = XSUAA native user,
+                    // anything else (IAS tenant ID, 'sap.custom', etc.) = federated IdP
+                    origin: tokenClaims['origin'],
+                    // zid = identity zone
+                    zid: tokenClaims['zid'],
+                    // iss = issuer URL (XSUAA or IAS)
+                    iss: tokenClaims['iss'],
+                    // ext_attr may contain 'enhancer': 'IAS' when token was issued via IAS
+                    ext_attr: tokenClaims['ext_attr'],
+                    // sub = subject (XSUAA UUID or IAS user UUID)
+                    sub: tokenClaims['sub'],
+                    exp_human: tokenClaims['exp']
+                        ? new Date((tokenClaims['exp'] as number) * 1000).toISOString()
+                        : undefined,
+                    grant_type: tokenClaims['grant_type'],
+                });
+                // ─────────────────────────────────────────────────────────────────
+
                 next();
             } catch (error) {
                 this.logger.error('Authentication failed:', error);

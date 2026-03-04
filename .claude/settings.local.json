@@ -12,7 +12,17 @@
       "Bash(grep:*)",
       "Bash(find:*)",
       "Bash(git checkout:*)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "Bash(mbt:*)",
+      "Bash(cf target:*)",
+      "Bash(python3:*)",
+      "Bash(du -sh /Users/tristramwilliams/Documents/BetaDigital/Fortescue/btp-sap-odata-to-mcp-server/mta_archives/ /Users/tristramwilliams/Documents/BetaDigital/Fortescue/btp-sap-odata-to-mcp-server/*.mtar)",
+      "Bash(unzip -l /Users/tristramwilliams/Documents/BetaDigital/Fortescue/btp-sap-odata-to-mcp-server/mta_archives/btp-sap-odata-to-mcp-server_1.0.0.mtar)",
+      "Bash(unzip -p /Users/tristramwilliams/Documents/BetaDigital/Fortescue/btp-sap-odata-to-mcp-server/mta_archives/btp-sap-odata-to-mcp-server_1.0.0.mtar sap-mcp-server-single/data.zip)",
+      "Bash(unzip -l -)",
+      "Bash(unzip -l sap-mcp-server-single/data.zip)",
+      "Bash(git remote set-url origin https://github.com/tristramwilliams/Claude-Dual-Destination-MCP.git)",
+      "Bash(git add .claude/settings.local.json mta.yaml src/index.ts src/mcp-server.ts src/services/auth-service.ts src/services/destination-service.ts src/services/sap-client.ts src/services/sap-discovery.ts src/services/service-discovery-config.ts src/tools/hierarchical-tool-registry.ts src/types/sap-types.ts src/utils/logger.ts .cfignore)"
     ],
     "deny": [],
     "ask": []

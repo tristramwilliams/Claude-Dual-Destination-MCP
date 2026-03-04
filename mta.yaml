@@ -13,22 +13,29 @@ build-parameters:
         - npm i
 
 modules:
-  - name: sap-mcp-server
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Single Destination variant
+  # Route: {org}-{space}-sap-mcp-server-single.cfapps.ap10.hana.ondemand.com
+  # Uses one BTP Destination (SAP_DESTINATION_NAME) for both discovery and
+  # execution. Simpler setup — technical user credentials baked into the
+  # destination.
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: sap-mcp-server-single
     type: nodejs
     path: ./
     parameters:
-      app-name: sap-mcp-server-${space}
+      app-name: sap-mcp-server-single
       memory: 512M
       disk-quota: 1G
       buildpack: nodejs_buildpack
       command: npm run start
-      keep-existing-routes: true
       health-check-type: http
       health-check-http-endpoint: /health
       timeout: 180
     properties:
-      LOG_LEVEL: debug
-      
+      LOG_LEVEL: info
+      # Single destination: one destination for discovery and execution
+      SAP_DESTINATION_NAME: MCF-GATEWAY
     build-parameters:
       builder: custom
       commands:
@@ -37,6 +44,47 @@ modules:
         - node_modules/
         - .git/
         - tests/
+        - mta_archives/
+    requires:
+      - name: sap-mcp-destination
+      - name: sap-mcp-connectivity
+      - name: sap-mcp-xsuaa
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Dual Destination variant
+  # Route: {org}-{space}-sap-mcp-server-dual.cfapps.ap10.hana.ondemand.com
+  # Uses two BTP Destinations:
+  #   SAP_DISCOVERY_DESTINATION_NAME — technical user, for OData service discovery
+  #   SAP_EXECUTION_DESTINATION_NAME — principal propagation / OAuth2SAMLBearer,
+  #                                    for executing OData calls on behalf of the
+  #                                    authenticated user (JWT forwarded)
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: sap-mcp-server-dual
+    type: nodejs
+    path: ./
+    parameters:
+      app-name: sap-mcp-server-dual
+      memory: 512M
+      disk-quota: 1G
+      buildpack: nodejs_buildpack
+      command: npm run start
+      health-check-type: http
+      health-check-http-endpoint: /health
+      timeout: 180
+    properties:
+      LOG_LEVEL: info
+      # Dual destination: separate destinations for discovery vs execution
+      SAP_DISCOVERY_DESTINATION_NAME: MCF-GATEWAY
+      SAP_EXECUTION_DESTINATION_NAME: MCF-GATEWAY-SSO
+    build-parameters:
+      builder: custom
+      commands:
+        - npm run build
+      ignore:
+        - node_modules/
+        - .git/
+        - tests/
+        - mta_archives/
     requires:
       - name: sap-mcp-destination
       - name: sap-mcp-connectivity

@@ -166,7 +166,7 @@ export function createApp(): express.Application {
             : true, // Allow all origins in development
         credentials: true,
         exposedHeaders: ['Mcp-Session-Id'],
-        allowedHeaders: ['Content-Type', 'mcp-session-id', 'MCP-Protocol-Version']
+        allowedHeaders: ['Content-Type', 'mcp-session-id', 'MCP-Protocol-Version', 'Authorization']
     }));
 
     app.use(express.json({ limit: '10mb' }));
