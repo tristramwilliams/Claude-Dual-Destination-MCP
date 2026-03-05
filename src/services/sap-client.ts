@@ -267,7 +267,8 @@ export class SAPClient {
         return this.executeRequest({
             method: 'GET',
             url,
-            isDiscovery
+            isDiscovery,
+            servicePath: isDiscovery ? undefined : servicePath
         });
     }
 
@@ -281,7 +282,8 @@ export class SAPClient {
         return this.executeRequest({
             method: 'GET',
             url,
-            isDiscovery
+            isDiscovery,
+            servicePath: isDiscovery ? undefined : servicePath
         });
     }
 
