@@ -52,6 +52,12 @@
   ],
   "authorities":["$XSAPPNAME.claudeai"],
   "oauth2-configuration": {
+    "grant-types": [
+      "authorization_code",
+      "client_credentials",
+      "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      "refresh_token"
+    ],
     "redirect-uris": [
       "https://*.cfapps.*.hana.ondemand.com/**",
       "https://claude.ai/api/mcp/auth_callback",
