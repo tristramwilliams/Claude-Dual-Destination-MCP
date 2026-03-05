@@ -47,7 +47,6 @@ export class AuthService {
             response_type: 'code',
             client_id: creds.clientid,
             redirect_uri: this.getRedirectUri(requestUrl),
-            scope: 'openid uaa.user',
             ...(state && { state })
         });
 
