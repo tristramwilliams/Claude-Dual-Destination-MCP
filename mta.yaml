@@ -36,6 +36,13 @@ modules:
       LOG_LEVEL: info
       # Single destination: one destination for discovery and execution
       SAP_DESTINATION_NAME: MCF-GATEWAY
+      # MCP Config App URL for per-user permission enforcement.
+      # Set to the deployed URL of the mcp-config-srv module, e.g.:
+      #   https://<org>-<space>-mcp-config-srv.cfapps.ap10.hana.ondemand.com
+      # Leave empty to disable permission checks (all operations allowed).
+      MCP_CONFIG_APP_URL: ""
+      # Enforcement mode: strict (deny on error) | permissive (allow on error)
+      MCP_PERMISSION_ENFORCEMENT_MODE: strict
     build-parameters:
       builder: custom
       commands:
@@ -76,6 +83,13 @@ modules:
       # Dual destination: separate destinations for discovery vs execution
       SAP_DISCOVERY_DESTINATION_NAME: MCF-GATEWAY
       SAP_EXECUTION_DESTINATION_NAME: MCF-GATEWAY-SSO
+      # MCP Config App URL for per-user permission enforcement.
+      # Set to the deployed URL of the mcp-config-srv module, e.g.:
+      #   https://<org>-<space>-mcp-config-srv.cfapps.ap10.hana.ondemand.com
+      # Leave empty to disable permission checks (all operations allowed).
+      MCP_CONFIG_APP_URL: ""
+      # Enforcement mode: strict (deny on error) | permissive (allow on error)
+      MCP_PERMISSION_ENFORCEMENT_MODE: strict
     build-parameters:
       builder: custom
       commands:

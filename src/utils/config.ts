@@ -20,6 +20,11 @@ export class Config {
         // OAuth configuration
         // this.config.set('oauth.redirectBaseUrl', process.env.OAUTH_REDIRECT_BASE_URL || 'http://localhost:3000');
 
+        // Permission check configuration — MCP Config App integration
+        this.config.set('permissionCheck.configAppUrl', process.env.MCP_CONFIG_APP_URL || '');
+        this.config.set('permissionCheck.enforcementMode', process.env.MCP_PERMISSION_ENFORCEMENT_MODE || 'strict');
+        this.config.set('permissionCheck.cacheTtlMs', parseInt(process.env.MCP_PERMISSION_CACHE_TTL_MS || '300000'));
+
         // OData service discovery configuration
         this.loadODataServiceConfig();
 

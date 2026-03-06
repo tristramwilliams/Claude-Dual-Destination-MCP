@@ -2,6 +2,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { SAPClient } from "../services/sap-client.js";
 import { Logger } from "../utils/logger.js";
 import { ODataService, EntityType } from "../types/sap-types.js";
+import { PermissionCheckService } from "../services/permission-check-service.js";
 import { z } from "zod";
 
 /**
@@ -27,23 +28,68 @@ import { z } from "zod";
 export class HierarchicalSAPToolRegistry {
     private serviceCategories = new Map<string, string[]>();
     private userToken?: string;
+    /** Resolved user login name extracted from the JWT, used for permission checks. */
+    private userId?: string;
 
     constructor(
         private mcpServer: McpServer,
         private sapClient: SAPClient,
         private logger: Logger,
-        private discoveredServices: ODataService[]
+        private discoveredServices: ODataService[],
+        private permissionCheckService?: PermissionCheckService
     ) {
         this.categorizeServices();
     }
 
     /**
-     * Set the user's JWT token for authenticated operations
+     * Set the user's JWT token for authenticated operations.
+     * Also decodes the token to extract the userId for permission checks.
      */
     setUserToken(token?: string) {
         this.userToken = token;
         this.sapClient.setUserToken(token);
-        this.logger.debug(`User token ${token ? 'set' : 'cleared'} for tool registry`);
+
+        if (token) {
+            this.userId = PermissionCheckService.extractUserIdFromToken(token);
+            this.logger.debug(`User token set for tool registry (userId: ${this.userId ?? 'unknown'})`);
+        } else {
+            this.userId = undefined;
+            this.logger.debug('User token cleared for tool registry');
+        }
+    }
+
+    /**
+     * Enforce a permission check before executing a CRUD operation.
+     * Returns an error tool response if access is denied, or undefined if access is granted.
+     */
+    private async enforcePermission(
+        serviceId: string,
+        entityName: string,
+        operation: string
+    ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError: true } | undefined> {
+        if (!this.permissionCheckService?.isConfigured()) {
+            return undefined; // No permission service configured — allow
+        }
+
+        if (!this.userId) {
+            const msg =
+                `[ACCESS DENIED] This operation requires authentication.\n\n` +
+                `No authenticated user identity could be resolved from the current session token.\n` +
+                `Please authenticate via OAuth before performing data operations.`;
+            this.logger.warn(`[PermissionCheck] Cannot perform check — no userId in token`, { serviceId, entityName, operation });
+            return { content: [{ type: 'text' as const, text: msg }], isError: true };
+        }
+
+        const result = await this.permissionCheckService.checkPermission(
+            this.userId, serviceId, entityName, operation
+        );
+
+        if (!result.allowed) {
+            this.logger.warn(`[PermissionCheck] Access denied`, { userId: this.userId, serviceId, entityName, operation });
+            return { content: [{ type: 'text' as const, text: result.reason! }], isError: true };
+        }
+
+        return undefined; // Access granted
     }
 
     /**
@@ -1178,6 +1224,11 @@ export class HierarchicalSAPToolRegistry {
                 };
             }
 
+            // Permission check — verify the logged-in user may perform this operation
+            const entitySetName = entityType.entitySet!;
+            const permissionDenied = await this.enforcePermission(serviceId, entitySetName, operation);
+            if (permissionDenied) return permissionDenied;
+
             // Set user token if requested and available
             if (useUserToken && this.userToken) {
                 this.sapClient.setUserToken(this.userToken);
@@ -1420,6 +1471,18 @@ export class HierarchicalSAPToolRegistry {
                 };
             }
 
+            // Permission check — for bound actions, use the entity set from the entityPath.
+            // For unbound actions without an entity path, derive entity name from the function
+            // name heuristic or allow if no entity can be determined.
+            if (entityPath) {
+                // Extract entity set name: e.g. "C_Purchasereqitmdtlsext(K='v')" → "C_Purchasereqitmdtlsext"
+                const boundEntity = entityPath.split('(')[0];
+                // Map HTTP method to a permission operation
+                const operation = httpMethod === 'GET' ? 'read' : 'update';
+                const permissionDenied = await this.enforcePermission(serviceId, boundEntity, operation);
+                if (permissionDenied) return permissionDenied;
+            }
+
             // Set user token
             if (this.userToken) {
                 this.sapClient.setUserToken(this.userToken);
@@ -1499,6 +1562,10 @@ export class HierarchicalSAPToolRegistry {
             // Resolve entity set name from entity type metadata; fall back to entityName itself
             const entityType = service.metadata?.entityTypes?.find(e => e.name === entityName);
             const entitySet = entityType?.entitySet || entityName;
+
+            // Permission check
+            const permissionDenied = await this.enforcePermission(serviceId, entitySet, 'update');
+            if (permissionDenied) return permissionDenied;
 
             // Build OData key predicate using JavaScript type detection
             const keyPredicate = this.buildKeyPredicateFromObject(keyProperties);

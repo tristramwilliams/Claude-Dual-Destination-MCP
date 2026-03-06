@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 import { DestinationService } from './services/destination-service.js';
 import { SAPClient } from './services/sap-client.js';
+import { PermissionCheckService } from './services/permission-check-service.js';
 import { Logger } from './utils/logger.js';
 import { Config } from './utils/config.js';
 
@@ -37,13 +38,37 @@ export class MCPServer {
             ErrorHandler.handle(error);
         };
 
+        // Build permission check service if Config App URL is configured
+        const configAppUrl = config.get<string>('permissionCheck.configAppUrl', '');
+        const enforcementMode = config.get<'strict' | 'permissive'>('permissionCheck.enforcementMode', 'strict');
+        const cacheTtlMs = config.get<number>('permissionCheck.cacheTtlMs', 300_000);
+        const permissionCheckService = new PermissionCheckService(
+            this.logger,
+            configAppUrl,
+            cacheTtlMs,
+            enforcementMode
+        );
+
+        if (configAppUrl) {
+            this.logger.info(
+                `🔐 Permission checks enabled — Config App: ${configAppUrl} (mode: ${enforcementMode})`
+            );
+        } else {
+            this.logger.warn(
+                `⚠️  MCP_CONFIG_APP_URL not set — permission checks are DISABLED. ` +
+                `Set this env var to enable per-user CRUD permission enforcement.`
+            );
+        }
+
         // Choose registry type based on env variable
         const registryType = process.env.MCP_TOOL_REGISTRY_TYPE || 'hierarchical';
         if (registryType === 'flat') {
             this.toolRegistry = new SAPToolRegistry(this.mcpServer, this.sapClient, this.logger, this.discoveredServices);
             this.logger.info('Using SAPToolRegistry (flat) for MCP tool exposure');
         } else {
-            this.toolRegistry = new HierarchicalSAPToolRegistry(this.mcpServer, this.sapClient, this.logger, this.discoveredServices);
+            this.toolRegistry = new HierarchicalSAPToolRegistry(
+                this.mcpServer, this.sapClient, this.logger, this.discoveredServices, permissionCheckService
+            );
             this.logger.info('Using HierarchicalSAPToolRegistry for MCP tool exposure');
         }
     }
