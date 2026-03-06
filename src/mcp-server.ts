@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 import { DestinationService } from './services/destination-service.js';
 import { SAPClient } from './services/sap-client.js';
-import { PermissionCheckService } from './services/permission-check-service.js';
+import { PermissionCheckService, XsuaaCredentials } from './services/permission-check-service.js';
 import { Logger } from './utils/logger.js';
 import { Config } from './utils/config.js';
+import xsenv from '@sap/xsenv';
 
 import { ErrorHandler } from './utils/error-handler.js';
 import { ODataService } from './types/sap-types.js';
@@ -42,16 +43,39 @@ export class MCPServer {
         const configAppUrl = config.get<string>('permissionCheck.configAppUrl', '');
         const enforcementMode = config.get<'strict' | 'permissive'>('permissionCheck.enforcementMode', 'strict');
         const cacheTtlMs = config.get<number>('permissionCheck.cacheTtlMs', 300_000);
+
+        // Read XSUAA credentials for client_credentials token flow.
+        // The bound service is sap-mcp-xsuaa (shared with the Config App).
+        let xsuaaCredentials: XsuaaCredentials | undefined;
+        try {
+            xsenv.loadEnv();
+            const services = xsenv.getServices({ xsuaa: { tag: 'xsuaa' } }) as {
+                xsuaa?: { url?: string; clientid?: string; clientsecret?: string };
+            };
+            const creds = services.xsuaa;
+            if (creds?.url && creds.clientid && creds.clientsecret) {
+                xsuaaCredentials = {
+                    url: creds.url,
+                    clientid: creds.clientid,
+                    clientsecret: creds.clientsecret
+                };
+            }
+        } catch {
+            this.logger.debug('[PermissionCheck] XSUAA service binding not found — running without client credentials');
+        }
+
         const permissionCheckService = new PermissionCheckService(
             this.logger,
             configAppUrl,
             cacheTtlMs,
-            enforcementMode
+            enforcementMode,
+            xsuaaCredentials
         );
 
         if (configAppUrl) {
             this.logger.info(
-                `🔐 Permission checks enabled — Config App: ${configAppUrl} (mode: ${enforcementMode})`
+                `🔐 Permission checks enabled — Config App: ${configAppUrl} ` +
+                `(mode: ${enforcementMode}, auth: ${xsuaaCredentials ? 'client_credentials' : 'none'})`
             );
         } else {
             this.logger.warn(

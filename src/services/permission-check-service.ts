@@ -15,9 +15,23 @@ export interface PermissionMap {
     };
 }
 
+/** XSUAA credentials used to obtain a client_credentials token. */
+export interface XsuaaCredentials {
+    /** XSUAA tenant base URL, e.g. https://mysubaccount.authentication.ap10.hana.ondemand.com */
+    url: string;
+    clientid: string;
+    clientsecret: string;
+}
+
 interface CachedPermissions {
     permissions: PermissionMap;
     fetchedAt: number;
+}
+
+interface CachedClientToken {
+    token: string;
+    /** Unix timestamp (ms) after which the token must be refreshed. */
+    expiresAt: number;
 }
 
 export type EnforcementMode = 'strict' | 'permissive';
@@ -28,6 +42,10 @@ export type EnforcementMode = 'strict' | 'permissive';
  * Checks whether the authenticated user has the required CRUD permission
  * for a given SAP OData service + entity combination by querying the
  * MCP Config App's `effectivePermissions` OData function.
+ *
+ * Server-to-server authentication uses OAuth2 client_credentials obtained
+ * from the shared XSUAA instance (`sap-mcp-xsuaa`) that is bound to both
+ * the MCP server and the Config App.
  *
  * Results are cached per-user for `cacheTtlMs` milliseconds (default 5 min)
  * to avoid a remote call on every MCP tool invocation.
@@ -43,17 +61,30 @@ export class PermissionCheckService {
     private readonly configAppUrl: string;
     private readonly cacheTtlMs: number;
     private readonly enforcementMode: EnforcementMode;
+    private readonly xsuaaCredentials?: XsuaaCredentials;
+    private clientCredentialsToken?: CachedClientToken;
 
     constructor(
         private readonly logger: Logger,
         configAppUrl: string,
         cacheTtlMs = 5 * 60 * 1000,
-        enforcementMode: EnforcementMode = 'strict'
+        enforcementMode: EnforcementMode = 'strict',
+        xsuaaCredentials?: XsuaaCredentials
     ) {
         // Strip trailing slash for consistent URL building
         this.configAppUrl = configAppUrl.replace(/\/$/, '');
         this.cacheTtlMs = cacheTtlMs;
         this.enforcementMode = enforcementMode;
+        this.xsuaaCredentials = xsuaaCredentials;
+
+        if (this.configAppUrl && xsuaaCredentials) {
+            logger.info('[PermissionCheck] Client credentials auth configured for Config App calls');
+        } else if (this.configAppUrl && !xsuaaCredentials) {
+            logger.warn(
+                '[PermissionCheck] No XSUAA credentials found — Config App calls will be unauthenticated. ' +
+                'Ensure sap-mcp-xsuaa is bound to this application.'
+            );
+        }
     }
 
     /**
@@ -162,6 +193,47 @@ export class PermissionCheckService {
 
     // ── private helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Obtain a client_credentials access token from XSUAA and cache it until
+     * it's within 60 seconds of expiry.
+     */
+    private async getClientCredentialsToken(): Promise<string> {
+        if (
+            this.clientCredentialsToken &&
+            Date.now() < this.clientCredentialsToken.expiresAt
+        ) {
+            return this.clientCredentialsToken.token;
+        }
+
+        const { url, clientid, clientsecret } = this.xsuaaCredentials!;
+        const tokenUrl = `${url.replace(/\/$/, '')}/oauth/token`;
+
+        this.logger.debug('[PermissionCheck] Fetching client credentials token', { tokenUrl });
+
+        const response = await axios.post<{ access_token: string; expires_in: number }>(
+            tokenUrl,
+            'grant_type=client_credentials&response_type=token',
+            {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                auth: { username: clientid, password: clientsecret },
+                timeout: 10_000
+            }
+        );
+
+        const { access_token, expires_in } = response.data;
+        // Cache with a 60-second buffer before true expiry
+        this.clientCredentialsToken = {
+            token: access_token,
+            expiresAt: Date.now() + Math.max(0, (expires_in - 60)) * 1000
+        };
+
+        this.logger.debug('[PermissionCheck] Client credentials token cached', {
+            expiresInSeconds: expires_in
+        });
+
+        return access_token;
+    }
+
     private async fetchPermissionsForUser(userId: string): Promise<PermissionMap> {
         const cached = this.cache.get(userId);
         if (cached && (Date.now() - cached.fetchedAt) < this.cacheTtlMs) {
@@ -173,8 +245,15 @@ export class PermissionCheckService {
         const url = `${this.configAppUrl}/odata/v4/access/effectivePermissions(userId='${encodeURIComponent(userId)}')`;
         this.logger.debug(`[PermissionCheck] Fetching permissions from Config App`, { url });
 
+        // Build auth header — use client credentials if XSUAA is configured
+        const headers: Record<string, string> = { Accept: 'application/json' };
+        if (this.xsuaaCredentials) {
+            const token = await this.getClientCredentialsToken();
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await axios.get<{ value: string }>(url, {
-            headers: { Accept: 'application/json' },
+            headers,
             timeout: 10_000
         });
 
@@ -215,10 +294,10 @@ export class PermissionCheckService {
      * Decode a JWT payload to extract the user identifier.
      *
      * Priority order of claims:
-     *   1. user_name   — SAP XSUAA native user login
+     *   1. user_name          — SAP XSUAA native user login
      *   2. preferred_username — OIDC standard claim (IAS federation)
-     *   3. email       — fallback for IAS-issued tokens
-     *   4. sub         — last-resort UUID subject
+     *   3. email              — fallback for IAS-issued tokens
+     *   4. sub                — last-resort UUID subject
      *
      * This does NOT verify the token signature — authentication is already
      * performed by the auth middleware before any tool handler is called.
