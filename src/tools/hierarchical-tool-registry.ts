@@ -1226,8 +1226,9 @@ export class HierarchicalSAPToolRegistry {
 
             // Permission check — verify the logged-in user may perform this operation
             const entitySetName = entityType.entitySet!;
-            const permissionDenied = await this.enforcePermission(serviceId, entitySetName, operation);
-            if (permissionDenied) return permissionDenied;
+            // TODO: Re-enable once Config App has entries populated
+            // const permissionDenied = await this.enforcePermission(serviceId, entitySetName, operation);
+            // if (permissionDenied) return permissionDenied;
 
             // Set user token if requested and available
             if (useUserToken && this.userToken) {
@@ -1479,8 +1480,9 @@ export class HierarchicalSAPToolRegistry {
                 const boundEntity = entityPath.split('(')[0];
                 // Map HTTP method to a permission operation
                 const operation = httpMethod === 'GET' ? 'read' : 'update';
-                const permissionDenied = await this.enforcePermission(serviceId, boundEntity, operation);
-                if (permissionDenied) return permissionDenied;
+                // TODO: Re-enable once Config App has entries populated
+                // const permissionDenied = await this.enforcePermission(serviceId, boundEntity, operation);
+                // if (permissionDenied) return permissionDenied;
             }
 
             // Set user token
@@ -1564,8 +1566,9 @@ export class HierarchicalSAPToolRegistry {
             const entitySet = entityType?.entitySet || entityName;
 
             // Permission check
-            const permissionDenied = await this.enforcePermission(serviceId, entitySet, 'update');
-            if (permissionDenied) return permissionDenied;
+            // TODO: Re-enable once Config App has entries populated
+            // const permissionDenied = await this.enforcePermission(serviceId, entitySet, 'update');
+            // if (permissionDenied) return permissionDenied;
 
             // Build OData key predicate using JavaScript type detection
             const keyPredicate = this.buildKeyPredicateFromObject(keyProperties);

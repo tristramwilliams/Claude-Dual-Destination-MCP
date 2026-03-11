@@ -40,7 +40,7 @@ modules:
       # Set to the deployed URL of the mcp-config-srv module, e.g.:
       #   https://<org>-<space>-mcp-config-srv.cfapps.ap10.hana.ondemand.com
       # Leave empty to disable permission checks (all operations allowed).
-      MCP_CONFIG_APP_URL: ""
+      MCP_CONFIG_APP_URL: "https://fortescue-mcp-poc-poc-mcp-config-srv.cfapps.ap10.hana.ondemand.com"
       # Enforcement mode: strict (deny on error) | permissive (allow on error)
       MCP_PERMISSION_ENFORCEMENT_MODE: strict
     build-parameters:
@@ -87,7 +87,7 @@ modules:
       # Set to the deployed URL of the mcp-config-srv module, e.g.:
       #   https://<org>-<space>-mcp-config-srv.cfapps.ap10.hana.ondemand.com
       # Leave empty to disable permission checks (all operations allowed).
-      MCP_CONFIG_APP_URL: ""
+      MCP_CONFIG_APP_URL: "https://fortescue-mcp-poc-poc-mcp-config-srv.cfapps.ap10.hana.ondemand.com"
       # Enforcement mode: strict (deny on error) | permissive (allow on error)
       MCP_PERMISSION_ENFORCEMENT_MODE: strict
     build-parameters:
