@@ -435,29 +435,58 @@ export class SAPClient {
     }
 
     private handleError(error: unknown): Error {
-        if (
-            typeof error === 'object' &&
-            error !== null &&
-            'rootCause' in error &&
-            (error as { rootCause?: { response?: { status: number; data?: { error?: { message?: { value?: string } | string } }; statusText?: string } } }).rootCause?.response
-        ) {
-            const response = (error as {
-                rootCause: {
-                    response: {
-                        status: number;
-                        data?: { error?: { message?: { value?: string } | string; code?: string } };
-                        statusText?: string;
+        if (typeof error === 'object' && error !== null) {
+            type SapErrorData = {
+                error?: {
+                    message?: { value?: string } | string;
+                    code?: string;
+                    innererror?: {
+                        errordetails?: Array<{
+                            code?: string;
+                            message?: { value?: string } | string;
+                            target?: string;
+                            severity?: string;
+                        }>;
                     };
                 };
-            }).rootCause.response;
+            };
+            const err = error as {
+                rootCause?: { response?: { status?: number; data?: SapErrorData; statusText?: string } };
+                response?: { status?: number; data?: SapErrorData; statusText?: string };
+            };
 
-            // Extract SAP OData error message (v2 uses message.value, v4 uses message directly)
-            const sapMessage = typeof response.data?.error?.message === 'object'
-                ? response.data.error.message.value
-                : response.data?.error?.message;
+            // Mirror logResponseBody: check rootCause first, fall back to response
+            const response = err.rootCause?.response ?? err.response;
 
-            const errorText = sapMessage || response.statusText || `HTTP ${response.status}`;
-            return new Error(`SAP API Error ${response.status}: ${errorText}`);
+            if (response) {
+                // Extract SAP OData error message (v2 uses message.value, v4 uses message directly)
+                const sapMessage = typeof response.data?.error?.message === 'object'
+                    ? response.data.error.message.value
+                    : response.data?.error?.message;
+
+                const errorCode = response.data?.error?.code;
+                const errorDetails = response.data?.error?.innererror?.errordetails;
+
+                let errorText = sapMessage || response.statusText || `HTTP ${response.status}`;
+
+                if (errorCode) {
+                    errorText += `\nSAP Error Code: ${errorCode}`;
+                }
+
+                if (Array.isArray(errorDetails) && errorDetails.length > 0) {
+                    errorText += '\nField-level errors:';
+                    for (const detail of errorDetails) {
+                        const detailMsg = typeof detail.message === 'object'
+                            ? detail.message?.value
+                            : detail.message;
+                        const target = detail.target ? ` [field: ${detail.target}]` : '';
+                        const severity = detail.severity ? ` (${detail.severity})` : '';
+                        if (detailMsg) errorText += `\n  - ${detailMsg}${target}${severity}`;
+                    }
+                }
+
+                return new Error(`SAP API Error ${response.status}: ${errorText}`);
+            }
         }
         return error instanceof Error ? error : new Error(String(error));
     }
